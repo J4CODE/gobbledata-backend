@@ -1,6 +1,6 @@
 // GA4 Service - Handles Google Analytics API OAuth and data fetching
-import { google } from 'googleapis';
-import { config } from '../config/index.js';
+import { google } from "googleapis";
+import { config } from "../config/index.js";
 
 // Create OAuth2 client
 const oauth2Client = new google.auth.OAuth2(
@@ -10,7 +10,7 @@ const oauth2Client = new google.auth.OAuth2(
 );
 
 // Scopes we need (read-only access to Analytics)
-const SCOPES = ['https://www.googleapis.com/auth/analytics.readonly'];
+const SCOPES = ["https://www.googleapis.com/auth/analytics.readonly"];
 
 export const ga4Service = {
   /**
@@ -19,10 +19,10 @@ export const ga4Service = {
    */
   getAuthUrl(userId) {
     const authUrl = oauth2Client.generateAuthUrl({
-      access_type: 'offline', // Gets refresh token
+      access_type: "offline", // Gets refresh token
       scope: SCOPES,
       state: userId, // Pass user ID through OAuth flow
-      prompt: 'consent', // Force consent screen (ensures refresh token)
+      prompt: "consent", // Force consent screen (ensures refresh token)
     });
     return authUrl;
   },
@@ -35,8 +35,8 @@ export const ga4Service = {
       const { tokens } = await oauth2Client.getToken(code);
       return tokens;
     } catch (error) {
-      console.error('Error exchanging code for tokens:', error);
-      throw new Error('Failed to get tokens from authorization code');
+      console.error("Error exchanging code for tokens:", error);
+      throw new Error("Failed to get tokens from authorization code");
     }
   },
 
@@ -51,8 +51,8 @@ export const ga4Service = {
       const { credentials } = await oauth2Client.refreshAccessToken();
       return credentials;
     } catch (error) {
-      console.error('Error refreshing token:', error);
-      throw new Error('Failed to refresh access token');
+      console.error("Error refreshing token:", error);
+      throw new Error("Failed to refresh access token");
     }
   },
 
@@ -66,23 +66,26 @@ export const ga4Service = {
       });
 
       const analyticsAdmin = google.analyticsadmin({
-        version: 'v1beta',
+        version: "v1beta",
         auth: oauth2Client,
       });
 
       // List all account summaries (includes properties)
       const response = await analyticsAdmin.accountSummaries.list();
-      
+
       const properties = [];
-      
+
       if (response.data.accountSummaries) {
-        response.data.accountSummaries.forEach(account => {
+        response.data.accountSummaries.forEach((account) => {
           if (account.propertySummaries) {
-            account.propertySummaries.forEach(property => {
+            account.propertySummaries.forEach((property) => {
               // Only include GA4 properties (they start with "properties/")
-              if (property.property && property.property.includes('properties/')) {
+              if (
+                property.property &&
+                property.property.includes("properties/")
+              ) {
                 properties.push({
-                  propertyId: property.property.replace('properties/', ''),
+                  propertyId: property.property.replace("properties/", ""),
                   propertyName: property.displayName,
                   accountName: account.displayName,
                 });
@@ -94,17 +97,136 @@ export const ga4Service = {
 
       return properties;
     } catch (error) {
-      console.error('Error fetching GA4 properties:', error);
-      throw new Error('Failed to fetch GA4 properties');
+      console.error("Error fetching GA4 properties:", error);
+      throw new Error("Failed to fetch GA4 properties");
     }
   },
 
   /**
-   * Fetch GA4 metrics data (we'll implement this in Day 5-6)
+   * Implement fetchMetrics() Function and Fetch GA4 metrics data
    */
-  async fetchMetrics(propertyId, accessToken, dateRange = '14daysAgo') {
-    // TODO: Implement in Week 1 Day 5-6
-    console.log('fetchMetrics - coming in Day 5-6');
-    return null;
+  /**
+   * Fetch metrics from GA4 Data API
+   * @param {string} propertyId - GA4 property ID (e.g., "468972634")
+   * @param {string} accessToken - Valid OAuth access token
+   * @param {object} options - Date range and metrics options
+   * @returns {object} Metrics data
+   */
+  async fetchMetrics(propertyId, accessToken, options = {}) {
+    try {
+      const {
+        startDate = "7daysAgo",
+        endDate = "yesterday",
+        metrics = [
+          "sessions",
+          "totalUsers",
+          "conversions",
+          "engagementRate",
+          "bounceRate",
+          "totalRevenue",
+        ],
+      } = options;
+
+      // Set up OAuth2 client with access token
+      oauth2Client.setCredentials({ access_token: accessToken });
+
+      // Initialize Analytics Data API
+      const analyticsData = google.analyticsdata("v1beta");
+
+      // Run report request
+      const response = await analyticsData.properties.runReport({
+        auth: oauth2Client,
+        property: `properties/${propertyId}`,
+        requestBody: {
+          dateRanges: [
+            {
+              startDate: startDate,
+              endDate: endDate,
+            },
+          ],
+          metrics: metrics.map((name) => ({ name })),
+          // Dimension breakdown by date for trend analysis
+          dimensions: [{ name: "date" }],
+          // Keep data fresh
+          keepEmptyRows: false,
+        },
+      });
+
+      // Parse response
+      const { rows, totals, metricHeaders } = response.data;
+
+      if (!rows || rows.length === 0) {
+        console.log("⚠️  No data available for this date range");
+        return {
+          hasData: false,
+          propertyId,
+          dateRange: { startDate, endDate },
+          totals: {},
+          daily: [],
+        };
+      }
+
+      // Parse totals (aggregate metrics)
+      const totalMetrics = {};
+      if (totals && totals[0]?.metricValues) {
+        metricHeaders.forEach((header, index) => {
+          const value = totals[0].metricValues[index]?.value;
+          totalMetrics[header.name] = parseFloat(value) || 0;
+        });
+      }
+
+      // Parse daily breakdown
+      const dailyData = rows.map((row) => {
+        const date = row.dimensionValues[0].value; // YYYYMMDD format
+        const metrics = {};
+
+        metricHeaders.forEach((header, index) => {
+          const value = row.metricValues[index]?.value;
+          metrics[header.name] = parseFloat(value) || 0;
+        });
+
+        return {
+          date: ga4Service.formatDate(date), // Convert to YYYY-MM-DD
+          ...metrics,
+        };
+      });
+
+      console.log(
+        `✅ Fetched ${dailyData.length} days of data for property ${propertyId}`
+      );
+
+      return {
+        hasData: true,
+        propertyId,
+        dateRange: { startDate, endDate },
+        totals: totalMetrics,
+        daily: dailyData,
+      };
+    } catch (error) {
+      console.error("❌ Error fetching GA4 metrics:", error.message);
+
+      // Handle specific error cases
+      if (error.code === 401) {
+        throw new Error("Access token expired - needs refresh");
+      }
+
+      if (error.code === 403) {
+        throw new Error("Insufficient permissions - check GA4 access");
+      }
+
+      throw error;
+    }
+  },
+
+  /* Helper: Format date from YYYYMMDD to YYYY-MM-DD */
+  formatDate(dateString) {
+    // Input: "20241210" -> Output: "2024-12-10"
+    if (dateString.length === 8) {
+      return `${dateString.slice(0, 4)}-${dateString.slice(
+        4,
+        6
+      )}-${dateString.slice(6, 8)}`;
+    }
+    return dateString;
   },
 };

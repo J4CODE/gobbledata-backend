@@ -184,4 +184,283 @@ router.delete(
   }
 );
 
+// Testing Routes
+/**
+ * TEST ROUTE: Fetch metrics from connected property (with auto-refresh)
+ * GET /api/ga4/test/fetch-metrics?userId=YOUR_USER_ID
+ */
+router.get("/test/fetch-metrics", async (req, res) => {
+  try {
+    const userId = req.query.userId;
+
+    if (!userId) {
+      return res.json({ error: "Add ?userId=YOUR_USER_ID to the URL" });
+    }
+
+    // Get user's connection
+    const connections = await supabaseService.getGA4Connections(userId);
+
+    if (!connections || connections.length === 0) {
+      return res.json({ error: "No GA4 connection found" });
+    }
+
+    let connection = connections[0];
+    let accessToken = connection.access_token;
+
+    // Check if token is expired
+    const tokenExpiry = new Date(connection.token_expires_at);
+    const now = new Date();
+
+    console.log("🔍 Token expiry check:");
+    console.log("  Token expires at:", tokenExpiry);
+    console.log("  Current time:", now);
+    console.log("  Is expired?", now >= tokenExpiry);
+
+    if (now >= tokenExpiry) {
+      console.log("🔄 Access token expired, refreshing...");
+
+      try {
+        // Refresh the token
+        const newTokens = await ga4Service.refreshAccessToken(
+          connection.refresh_token
+        );
+
+        // Update database with new tokens
+        const { error } = await supabaseAdmin
+          .from("ga4_connections")
+          .update({
+            access_token: newTokens.access_token,
+            token_expires_at: new Date(newTokens.expiry_date).toISOString(),
+            refresh_token: newTokens.refresh_token || connection.refresh_token, // Keep old one if not provided
+          })
+          .eq("id", connection.id);
+
+        if (error) {
+          console.error("Failed to update tokens:", error);
+        } else {
+          console.log("✅ Token refreshed and saved");
+          accessToken = newTokens.access_token;
+        }
+      } catch (refreshError) {
+        console.error("❌ Token refresh failed:", refreshError);
+        return res.status(401).json({
+          error: "Token refresh failed - user needs to reconnect",
+          needsReconnect: true,
+        });
+      }
+    }
+
+    console.log(`📊 Fetching metrics for ${connection.property_name}...`);
+
+    // Fetch last 7 days of data
+    const metrics = await ga4Service.fetchMetrics(
+      connection.property_id,
+      accessToken,
+      {
+        startDate: "7daysAgo",
+        endDate: "yesterday",
+      }
+    );
+
+    res.json({
+      success: true,
+      property: {
+        id: connection.property_id,
+        name: connection.property_name,
+      },
+      metrics,
+    });
+  } catch (error) {
+    console.error("Fetch metrics error:", error);
+    res.status(500).json({
+      error: error.message,
+      needsRefresh: error.message.includes("expired"),
+    });
+  }
+});
+
+// ... existing test/fetch-metrics route stays here ...
+
+/**
+ * TEMP: Manually refresh token
+ * GET /api/ga4/force-refresh?userId=YOUR_USER_ID
+ */
+/**
+ * TEMP: Manually refresh token
+ * GET /api/ga4/force-refresh?userId=YOUR_USER_ID
+ */
+router.get("/force-refresh", async (req, res) => {
+  try {
+    const userId = req.query.userId;
+
+    if (!userId) {
+      return res.json({ error: "Add ?userId=YOUR_USER_ID to the URL" });
+    }
+
+    const connections = await supabaseService.getGA4Connections(userId);
+
+    if (!connections || connections.length === 0) {
+      return res.json({ error: "No connection found" });
+    }
+
+    const connection = connections[0];
+
+    console.log("🔄 Forcing token refresh...");
+
+    const newTokens = await ga4Service.refreshAccessToken(
+      connection.refresh_token
+    );
+
+    // Calculate correct expiry (3600 seconds = 1 hour)
+    const expiresAt = new Date(
+      Date.now() + (newTokens.expires_in || 3600) * 1000
+    ).toISOString();
+
+    console.log("📅 New token expires at:", expiresAt);
+
+    const { error } = await supabaseAdmin
+      .from("ga4_connections")
+      .update({
+        access_token: newTokens.access_token,
+        token_expires_at: expiresAt,
+      })
+      .eq("id", connection.id);
+
+    if (error) throw error;
+
+    res.json({
+      success: true,
+      message: "Token refreshed successfully",
+      expiresAt,
+    });
+  } catch (error) {
+    console.error("Force refresh error:", error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * TEST ROUTE: Analyze metrics and detect anomalies
+ * GET /api/ga4/test/analyze?userId=YOUR_USER_ID
+ */
+router.get("/test/analyze", async (req, res) => {
+  try {
+    const userId = req.query.userId;
+
+    if (!userId) {
+      return res.json({ error: "Add ?userId=YOUR_USER_ID to the URL" });
+    }
+
+    // Get connection
+    const connections = await supabaseService.getGA4Connections(userId);
+
+    if (!connections || connections.length === 0) {
+      return res.json({ error: "No connection found" });
+    }
+
+    const connection = connections[0];
+
+    console.log(
+      `📊 Fetching and analyzing metrics for ${connection.property_name}...`
+    );
+
+    // Fetch metrics
+    const metrics = await ga4Service.fetchMetrics(
+      connection.property_id,
+      connection.access_token,
+      {
+        startDate: "7daysAgo",
+        endDate: "yesterday",
+      }
+    );
+
+    if (!metrics.hasData) {
+      return res.json({ error: "No data available" });
+    }
+
+    // Import insights service
+    const { insightsService } = await import("../services/insights.service.js");
+
+    // Analyze for anomalies
+    const insights = await insightsService.analyzeMetrics(metrics.daily);
+
+    res.json({
+      success: true,
+      property: connection.property_name,
+      dataPoints: metrics.daily.length,
+      insights: insights,
+      topThree: insights.slice(0, 3), // Top 3 insights
+    });
+  } catch (error) {
+    console.error("Analyze error:", error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * TEST ROUTE: Analyze and save insights
+ * GET /api/ga4/test/save-insights?userId=YOUR_USER_ID
+ */
+router.get("/test/save-insights", async (req, res) => {
+  try {
+    const userId = req.query.userId;
+
+    if (!userId) {
+      return res.json({ error: "Add ?userId=YOUR_USER_ID to the URL" });
+    }
+
+    // Get connection
+    const connections = await supabaseService.getGA4Connections(userId);
+
+    if (!connections || connections.length === 0) {
+      return res.json({ error: "No connection found" });
+    }
+
+    const connection = connections[0];
+
+    console.log(`📊 Fetching metrics for ${connection.property_name}...`);
+
+    // Fetch metrics
+    const metrics = await ga4Service.fetchMetrics(
+      connection.property_id,
+      connection.access_token,
+      {
+        startDate: "7daysAgo",
+        endDate: "yesterday",
+      }
+    );
+
+    if (!metrics.hasData) {
+      return res.json({ error: "No data available" });
+    }
+
+    // Import insights service
+    const { insightsService } = await import("../services/insights.service.js");
+
+    // Analyze for anomalies
+    const insights = await insightsService.analyzeMetrics(metrics.daily);
+
+    console.log(`🔍 Detected ${insights.length} insights`);
+
+    // Save to database
+    const saveResult = await supabaseService.saveInsights(
+      userId,
+      connection.id, // ← ADDED connection ID
+      insights
+    );
+
+    res.json({
+      success: true,
+      property: connection.property_name,
+      analyzed: metrics.daily.length,
+      detected: insights.length,
+      saved: saveResult.saved,
+      insights: saveResult.insights,
+    });
+  } catch (error) {
+    console.error("Save insights error:", error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 export default router;

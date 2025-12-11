@@ -45,7 +45,7 @@ export const config = {
       conversionRate: 0.15,
       sessions: 0.30,
       users: 0.30,
-      bounceRate: 0.40,
+      bounceRate: 0.35,
       engagementRate: 0.35,
     },
     persistence: {
