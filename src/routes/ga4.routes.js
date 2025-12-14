@@ -7,8 +7,14 @@ import {
   supabaseAdmin,
 } from "../services/supabase.service.js";
 import { config } from "../config/index.js";
+import * as emailService from "../services/email.service.js";
 
 const router = express.Router();
+
+// TEMPORARY DEBUG ROUTE
+router.get("/test/hello", (req, res) => {
+  res.json({ message: "Hello from test route!" });
+});
 
 /**
  * ROUTE 1: Start OAuth flow
@@ -461,6 +467,114 @@ router.get("/test/save-insights", async (req, res) => {
     console.error("Save insights error:", error);
     res.status(500).json({ error: error.message });
   }
+});
+
+/**
+ * TEST ROUTE: Send email with real insights from database
+ * GET /api/ga4/test/send-email?userId=YOUR_USER_ID
+ */
+router.get("/test/send-email", async (req, res) => {
+  try {
+    const userId = req.query.userId || "d92c6c05-5899-4e62-a90b-1d6cc0f506e0";
+
+    console.log("📧 Testing email send for user:", userId);
+
+    // Get latest insights from database
+    const { data: insights, error } = await supabaseAdmin
+      .from("daily_insights")
+      .select("*")
+      .eq("user_id", userId)
+      .order("created_at", { ascending: false })
+      .limit(3);
+
+    if (error) {
+      throw error;
+    }
+
+    if (!insights || insights.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: "No insights found for user. Run /test/save-insights first.",
+      });
+    }
+
+    console.log(`📊 Found ${insights.length} insights to send`);
+
+    // Send email
+    const result = await emailService.sendDailyInsights(userId, insights);
+
+    res.json({
+      success: result.success,
+      message: result.message,
+      emailId: result.emailId,
+      recipient: result.recipient,
+      insightCount: insights.length,
+    });
+  } catch (error) {
+    console.error("❌ Email test error:", error);
+    res.status(500).json({
+      success: false,
+      error: error.message,
+    });
+  }
+});
+
+/**
+ * TEST ROUTE: Send simple test email (doesn't require database)
+ * GET /api/ga4/test/send-simple-email?email=YOUR_EMAIL
+ */
+router.get("/test/send-simple-email", async (req, res) => {
+  try {
+    const email = req.query.email || "luvntruth77@gmail.com";
+
+    console.log("📧 Sending simple test email to:", email);
+
+    const result = await emailService.sendTestEmail(email);
+
+    res.json(result);
+  } catch (error) {
+    console.error("❌ Simple email test error:", error);
+    res.status(500).json({
+      success: false,
+      error: error.message,
+    });
+  }
+});
+
+// Test route for manually running the daily insights job
+router.get("/test/run-daily-job", async (req, res) => {
+  try {
+    console.log("[Test] Manually triggering daily insights job...");
+
+    const { runNow } = await import("../services/scheduler.service.js");
+    const result = await runNow();
+
+    res.json({
+      success: true,
+      message: "Daily insights job completed",
+      ...result,
+    });
+  } catch (error) {
+    console.error("[Test] Error running daily job:", error);
+    res.status(500).json({
+      success: false,
+      error: error.message,
+    });
+  }
+});
+
+// TEMP: Check active connections
+router.get("/test/check-connections", async (req, res) => {
+  const { data, error } = await supabaseAdmin
+    .from("ga4_connections")
+    .select("*")
+    .eq("is_active", true);
+
+  res.json({
+    activeConnections: data?.length || 0,
+    connections: data,
+    error: error,
+  });
 });
 
 export default router;

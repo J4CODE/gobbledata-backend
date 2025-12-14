@@ -1,12 +1,12 @@
 // Configuration - loads environment variables
-import dotenv from 'dotenv';
+import dotenv from "dotenv";
 dotenv.config();
 
 export const config = {
   // Server
   port: process.env.PORT || 3001,
-  nodeEnv: process.env.NODE_ENV || 'development',
-  frontendUrl: process.env.FRONTEND_URL || 'http://localhost:5173',
+  nodeEnv: process.env.NODE_ENV || "development",
+  frontendUrl: process.env.FRONTEND_URL || "http://localhost:5173",
 
   // Supabase
   supabase: {
@@ -25,10 +25,10 @@ export const config = {
   // Email
   email: {
     host: process.env.SMTP_HOST,
-    port: parseInt(process.env.SMTP_PORT || '587'),
+    port: parseInt(process.env.SMTP_PORT || "587"),
     user: process.env.SMTP_USER,
     pass: process.env.SMTP_PASS,
-    from: process.env.EMAIL_FROM || 'insights@gobbledata.com',
+    from: process.env.EMAIL_FROM || "insights@gobbledata.com",
   },
 
   // Stripe
@@ -40,24 +40,24 @@ export const config = {
   // Algorithm thresholds (from our research!)
   algorithm: {
     thresholds: {
-      conversions: 0.20,      // 20% change
-      revenue: 0.20,
+      conversions: 0.2, // 20% change
+      revenue: 0.2,
       conversionRate: 0.15,
-      sessions: 0.30,
-      users: 0.30,
+      sessions: 0.3,
+      users: 0.3,
       bounceRate: 0.35,
       engagementRate: 0.35,
     },
     persistence: {
-      window: 5,              // 5-day window
-      required: 3,            // Must be anomalous 3+ days
+      window: 5, // 5-day window
+      required: 3, // Must be anomalous 3+ days
     },
-    minSampleSize: 100,       // Need 100+ sessions/day
+    minSampleSize: 100, // Need 100+ sessions/day
   },
 };
 
 // Debug: verify GA4 config is loading
-console.log('🔍 GA4 Config Check:');
-console.log('Client ID:', config.ga4.clientId ? 'SET ✓' : 'MISSING ✗');
-console.log('Client Secret:', config.ga4.clientSecret ? 'SET ✓' : 'MISSING ✗');
-console.log('Redirect URI:', config.ga4.redirectUri);
+console.log("🔍 GA4 Config Check:");
+console.log("Client ID:", config.ga4.clientId ? "SET ✓" : "MISSING ✗");
+console.log("Client Secret:", config.ga4.clientSecret ? "SET ✓" : "MISSING ✗");
+console.log("Redirect URI:", config.ga4.redirectUri);
