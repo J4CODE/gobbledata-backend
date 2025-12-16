@@ -577,4 +577,50 @@ router.get("/test/check-connections", async (req, res) => {
   });
 });
 
+// Test GA4 connection (DEV ONLY)
+router.get("/test-fetch/:connectionId", async (req, res) => {
+  try {
+    const { connectionId } = req.params;
+
+    // Get connection
+    const { data: connection } = await supabaseAdmin
+      .from("ga4_connections")
+      .select("*")
+      .eq("id", connectionId)
+      .single();
+
+    if (!connection) {
+      return res.status(404).json({ error: "Connection not found" });
+    }
+
+    console.log("🔍 Testing GA4 fetch with:");
+    console.log("  Property ID:", connection.property_id);
+    console.log("  Token expires:", connection.token_expires_at);
+
+    // Try to fetch metrics
+    const { ga4Service } = await import("../services/ga4.service.js");
+    const metrics = await ga4Service.fetchMetrics(
+      connection.property_id,
+      connection.access_token,
+      {
+        startDate: "7daysAgo",
+        endDate: "yesterday",
+      }
+    );
+
+    res.json({
+      success: true,
+      hasData: metrics?.hasData,
+      dailyCount: metrics?.daily?.length,
+      sample: metrics?.daily?.[0],
+    });
+  } catch (error) {
+    console.error("❌ GA4 test error:", error);
+    res.status(500).json({
+      error: error.message,
+      stack: error.stack,
+    });
+  }
+});
+
 export default router;

@@ -2,18 +2,119 @@
 import cron from "node-cron";
 import { supabaseAdmin } from "./supabase.service.js";
 import { sendDailyInsights } from "./email.service.js";
-// ga4Service and insightsService imported dynamically to avoid circular deps
+import moment from "moment-timezone";
+
+/**
+ * Check if today matches the property's report_days
+ */
+function shouldSendReportToday(reportDays) {
+  const daysMap = {
+    0: "Sun",
+    1: "Mon",
+    2: "Tue",
+    3: "Wed",
+    4: "Thu",
+    5: "Fri",
+    6: "Sat",
+  };
+
+  const today = daysMap[new Date().getDay()];
+  return reportDays.includes(today);
+}
+
+/**
+ * Get lookback days based on subscription tier
+ */
+function getLookbackDays(subscriptionTier) {
+  const tierLimits = {
+    starter: 14,
+    growth: 30,
+    pro: 60,
+    enterprise: 90,
+  };
+  return tierLimits[subscriptionTier] || 14;
+}
+
+/**
+ * Check if user should receive report based on frequency and last sent
+ */
+function shouldSendReport(subscriptionTier, lastEmailSentAt, frequency) {
+  // Starter = weekly only
+  if (subscriptionTier === "starter" && lastEmailSentAt) {
+    const daysSinceLastEmail =
+      (Date.now() - new Date(lastEmailSentAt)) / (1000 * 60 * 60 * 24);
+    if (daysSinceLastEmail < 7) {
+      return false; // Already sent this week
+    }
+  }
+
+  // All other tiers = daily (or more frequent for Pro/Enterprise)
+  return true;
+}
 
 /**
  * Process daily insights for a single user
- * @param {string} userId - User ID to process
- * @returns {Promise<Object>} Result object with success/error
  */
 async function processDailyInsightsForUser(userId) {
   try {
     console.log(`[Scheduler] Processing user: ${userId}`);
 
-    // Step 1: Get user's GA4 connection
+    // Step 1: Get user profile with subscription info
+    const { data: userProfile, error: userError } = await supabaseAdmin
+      .from("user_profiles")
+      .select("*")
+      .eq("id", userId)
+      .single();
+
+    if (userError || !userProfile) {
+      console.log(`[Scheduler] User profile not found: ${userId}`);
+      return { userId, success: false, error: "User profile not found" };
+    }
+
+    // Step 2: Check subscription status
+    if (userProfile.subscription_status !== "active") {
+      console.log(`[Scheduler] User ${userId} has inactive subscription`);
+      return { userId, success: false, error: "Inactive subscription" };
+    }
+
+    // Step 3: Get email preferences
+    const { data: emailPref, error: prefError } = await supabaseAdmin
+      .from("email_preferences")
+      .select("*")
+      .eq("user_id", userId)
+      .single();
+
+    if (prefError || !emailPref || !emailPref.enabled) {
+      console.log(`[Scheduler] Email preferences disabled for user ${userId}`);
+      return { userId, success: false, error: "Email preferences disabled" };
+    }
+
+    // Step 4: Check if we should send report today (based on report_days)
+    const reportDays = emailPref.report_days || [
+      "Mon",
+      "Tue",
+      "Wed",
+      "Thu",
+      "Fri",
+    ];
+    if (!shouldSendReportToday(reportDays)) {
+      console.log(`[Scheduler] Not scheduled for today: ${userId}`);
+      return { userId, success: false, error: "Not scheduled for today" };
+    }
+
+    // Step 5: Check frequency limits (starter = weekly)
+    if (
+      !shouldSendReport(
+        userProfile.subscription_tier,
+        emailPref.last_email_sent_at,
+        emailPref.frequency
+      )
+    ) {
+      console.log(`[Scheduler] Frequency limit reached for user ${userId}`);
+      return { userId, success: false, error: "Frequency limit reached" };
+    }
+
+    // Step 6: Get user's GA4 connection
     const { data: connections, error: connError } = await supabaseAdmin
       .from("ga4_connections")
       .select("*")
@@ -29,7 +130,7 @@ async function processDailyInsightsForUser(userId) {
     const connection = connections[0];
     let accessToken = connection.access_token;
 
-    // Step 2: Check if token needs refresh
+    // Step 7: Check if token needs refresh
     const tokenExpiry = new Date(connection.token_expires_at);
     const now = new Date();
 
@@ -41,7 +142,6 @@ async function processDailyInsightsForUser(userId) {
         connection.refresh_token
       );
 
-      // Update token in database
       const { error: updateError } = await supabaseAdmin
         .from("ga4_connections")
         .update({
@@ -58,13 +158,19 @@ async function processDailyInsightsForUser(userId) {
       }
     }
 
-    // Step 3: Fetch GA4 metrics
+    // Step 8: Get lookback days based on subscription tier
+    const lookbackDays = getLookbackDays(userProfile.subscription_tier);
+    console.log(
+      `[Scheduler] Using ${lookbackDays}-day lookback for ${userProfile.subscription_tier} tier`
+    );
+
+    // Step 9: Fetch GA4 metrics
     const { ga4Service } = await import("./ga4.service.js");
     const metrics = await ga4Service.fetchMetrics(
       connection.property_id,
       accessToken,
       {
-        startDate: "7daysAgo",
+        startDate: `${lookbackDays}daysAgo`,
         endDate: "yesterday",
       }
     );
@@ -79,7 +185,7 @@ async function processDailyInsightsForUser(userId) {
       return { userId, success: false, error: "No metrics available" };
     }
 
-    // Step 4: Analyze for anomalies (DYNAMIC IMPORT)
+    // Step 10: Analyze for anomalies
     const { insightsService } = await import("./insights.service.js");
     const insights = await insightsService.analyzeMetrics(metrics.daily);
 
@@ -92,7 +198,7 @@ async function processDailyInsightsForUser(userId) {
       `[Scheduler] Found ${insights.length} insights for user ${userId}`
     );
 
-    // Step 5: Save insights to database (top 3 only)
+    // Step 11: Save insights to database (top 3 only)
     const topInsights = insights.slice(0, 3);
 
     const { error: saveError } = await supabaseAdmin
@@ -103,7 +209,7 @@ async function processDailyInsightsForUser(userId) {
           ga4_connection_id: connection.id,
           insight_date: insight.date,
           insight_type: "ANOMALY",
-          priority: index + 1, // ← Use index so each insight has unique priority
+          priority: index + 1,
           metric_name: insight.metric,
           metric_value: insight.currentValue,
           baseline_value: insight.baseline,
@@ -117,31 +223,37 @@ async function processDailyInsightsForUser(userId) {
           email_sent_at: null,
         })),
         {
-          onConflict: "user_id,insight_date,priority", // ← Handle duplicates
-          ignoreDuplicates: false, // ← Update if exists
+          onConflict: "user_id,insight_date,priority",
+          ignoreDuplicates: false,
         }
       );
 
     if (saveError) {
-      console.error(
-        `[Scheduler] Error saving insights for user ${userId}:`,
-        saveError
-      );
+      console.error(`[Scheduler] Error saving insights:`, saveError);
       return { userId, success: false, error: saveError.message };
     }
 
     console.log(`[Scheduler] Saved ${topInsights.length} insights to database`);
 
-    // Step 6: Send email
-    const emailResult = await sendDailyInsights(userId, topInsights);
+    // Step 12: Send email (pass subscription tier for branding)
+    const emailResult = await sendDailyInsights(
+      userId,
+      topInsights,
+      userProfile.subscription_tier
+    );
 
     if (!emailResult.success) {
-      console.error(
-        `[Scheduler] Error sending email for user ${userId}:`,
-        emailResult.error
-      );
+      console.error(`[Scheduler] Error sending email:`, emailResult.error);
       return { userId, success: false, error: emailResult.error };
     }
+
+    // Step 13: Update last email sent timestamp
+    await supabaseAdmin
+      .from("email_preferences")
+      .update({
+        last_email_sent_at: new Date().toISOString(),
+      })
+      .eq("user_id", userId);
 
     console.log(`[Scheduler] ✅ Successfully processed user ${userId}`);
     return {
@@ -158,7 +270,6 @@ async function processDailyInsightsForUser(userId) {
 
 /**
  * Process daily insights for all active users
- * @returns {Promise<Object>} Summary of results
  */
 export async function runDailyInsightsJob() {
   console.log("\n==================================================");
@@ -168,34 +279,34 @@ export async function runDailyInsightsJob() {
   console.log("==================================================\n");
 
   try {
-    // Fetch all users with active GA4 connections
-    const { data: connections, error } = await supabaseAdmin
-      .from("ga4_connections")
+    // Fetch all users with active email preferences
+    const { data: preferences, error } = await supabaseAdmin
+      .from("email_preferences")
       .select("user_id")
-      .eq("is_active", true);
+      .eq("enabled", true);
 
     if (error) {
-      console.error("[Scheduler] Error fetching active connections:", error);
+      console.error("[Scheduler] Error fetching preferences:", error);
       return { success: false, error: error.message };
     }
 
-    if (!connections || connections.length === 0) {
-      console.log("[Scheduler] No active connections found");
+    if (!preferences || preferences.length === 0) {
+      console.log("[Scheduler] No users with email preferences enabled");
       return { success: true, processedUsers: 0, results: [] };
     }
 
     console.log(
-      `[Scheduler] Found ${connections.length} active user(s) to process\n`
+      `[Scheduler] Found ${preferences.length} user(s) with email enabled\n`
     );
 
-    // Process each user (run in parallel for efficiency)
+    // Process each user
     const results = await Promise.allSettled(
-      connections.map((conn) => processDailyInsightsForUser(conn.user_id))
+      preferences.map((pref) => processDailyInsightsForUser(pref.user_id))
     );
 
     // Summarize results
     const summary = {
-      total: connections.length,
+      total: preferences.length,
       successful: results.filter(
         (r) => r.status === "fulfilled" && r.value.success
       ).length,
@@ -222,26 +333,29 @@ export async function runDailyInsightsJob() {
 
 /**
  * Start the daily cron job
- * Runs every day at 8:00 AM (server timezone)
- * Cron format: second minute hour day month dayOfWeek
+ * Runs every hour and checks which users need reports
  */
 export function startDailySchedule() {
-  // Run every day at 8:00 AM
-  const schedule = "0 8 * * *"; // minute hour day month dayOfWeek
+  // Run every hour to check for users needing reports
+  const schedule = "0 * * * *"; // Every hour at :00
 
   cron.schedule(
     schedule,
     async () => {
-      console.log("[Scheduler] Cron job triggered");
+      console.log(
+        `[Scheduler] Hourly check triggered at ${new Date().toISOString()}`
+      );
       await runDailyInsightsJob();
     },
     {
       scheduled: true,
-      timezone: "America/New_York", // TODO: Make this configurable per user
+      timezone: "UTC", // Run in UTC, user timezones handled in logic
     }
   );
 
-  console.log("✅ Daily insights scheduler started (runs at 8:00 AM EST)");
+  console.log(
+    "✅ Hourly scheduler started (checks every hour for due reports)"
+  );
 }
 
 /**

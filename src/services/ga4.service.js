@@ -10,7 +10,10 @@ const oauth2Client = new google.auth.OAuth2(
 );
 
 // Scopes we need (read-only access to Analytics)
-const SCOPES = ["https://www.googleapis.com/auth/analytics.readonly"];
+const SCOPES = [
+  "https://www.googleapis.com/auth/analytics.readonly",
+  "https://www.googleapis.com/auth/analytics"
+];
 
 export const ga4Service = {
   /**
@@ -112,6 +115,7 @@ export const ga4Service = {
    * @param {object} options - Date range and metrics options
    * @returns {object} Metrics data
    */
+
   async fetchMetrics(propertyId, accessToken, options = {}) {
     try {
       const {
@@ -126,6 +130,16 @@ export const ga4Service = {
           "totalRevenue",
         ],
       } = options;
+
+      // DEBUG: Log what we're sending to Google
+      console.log("🔍 GA4 API Request Debug:");
+      console.log("  Property ID:", propertyId);
+      console.log(
+        "  Access Token (first 20 chars):",
+        accessToken?.substring(0, 20)
+      );
+      console.log("  Token length:", accessToken?.length);
+      console.log("  Date range:", startDate, "to", endDate);
 
       // Set up OAuth2 client with access token
       oauth2Client.setCredentials({ access_token: accessToken });
@@ -205,11 +219,20 @@ export const ga4Service = {
     } catch (error) {
       console.error("❌ Error fetching GA4 metrics:", error.message);
 
+      // DEBUG: Log the full error from Google
+      console.log("🔍 Full error details:");
+      console.log("  Error code:", error.code);
+      console.log("  Error status:", error.status);
+      console.log(
+        "  Error response:",
+        JSON.stringify(error.response?.data, null, 2)
+      );
+      console.log("  Error errors:", JSON.stringify(error.errors, null, 2));
+
       // Handle specific error cases
       if (error.code === 401) {
         throw new Error("Access token expired - needs refresh");
       }
-
       if (error.code === 403) {
         throw new Error("Insufficient permissions - check GA4 access");
       }
