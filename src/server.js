@@ -173,29 +173,32 @@ app.get("/health", (req, res) => {
 
 console.log("✅ Step 8: Health check registered");
 
+
+
+
 // ==================================================
 // MANUAL SCHEDULER TRIGGER (Remove in production after testing)
 // ==================================================
-if (config.nodeEnv === "development") {
-  app.post("/api/scheduler/run-now", async (req, res) => {
-    console.log("🔧 Manual scheduler trigger requested");
-    try {
-      const result = await runSchedulerNow();
-      res.json({
-        success: true,
-        message: "Scheduler ran successfully",
-        result,
-      });
-    } catch (error) {
-      console.error("❌ Scheduler error:", error);
-      res.status(500).json({
-        success: false,
-        error: error.message,
-      });
-    }
-  });
-  console.log("  ⚠️  DEV ONLY: Manual scheduler route enabled");
-}
+
+app.post("/api/scheduler/run-now", async (req, res) => {
+  console.log("🔧 Manual scheduler trigger requested");
+  try {
+    const result = await runSchedulerNow();
+    res.json({
+      success: true,
+      message: "Scheduler ran successfully",
+      result,
+    });
+  } catch (error) {
+    console.error("❌ Scheduler error:", error);
+    res.status(500).json({
+      success: false,
+      error: error.message,
+    });
+  }
+});
+console.log("✅ Manual scheduler route enabled");
+
 
 // ==================================================
 // API ROUTES
