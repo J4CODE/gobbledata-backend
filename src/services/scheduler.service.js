@@ -96,6 +96,8 @@ async function processDailyInsightsForUser(userId) {
       "Wed",
       "Thu",
       "Fri",
+      "Sat",
+      "Sun",
     ];
     if (!shouldSendReportToday(reportDays)) {
       console.log(`[Scheduler] Not scheduled for today: ${userId}`);
