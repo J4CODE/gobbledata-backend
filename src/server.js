@@ -173,9 +173,6 @@ app.get("/health", (req, res) => {
 
 console.log("✅ Step 8: Health check registered");
 
-
-
-
 // ==================================================
 // MANUAL SCHEDULER TRIGGER (Remove in production after testing)
 // ==================================================
@@ -198,7 +195,6 @@ app.post("/api/scheduler/run-now", async (req, res) => {
   }
 });
 console.log("✅ Manual scheduler route enabled");
-
 
 // ==================================================
 // API ROUTES
