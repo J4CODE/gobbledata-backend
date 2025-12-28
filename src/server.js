@@ -26,6 +26,7 @@ import { runNow as runSchedulerNow } from "./services/scheduler.service.js";
 console.log("✅ Step 5: Scheduler imported");
 
 const app = express();
+app.set("trust proxy", 1); // Trust first proxy (Render)
 console.log("✅ Step 6: Express app created");
 
 // ==================================================
