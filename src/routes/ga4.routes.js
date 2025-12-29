@@ -31,11 +31,11 @@ router.get("/connect", async (req, res) => {
     }
 
     // Verify token
-    const { supabase } = await import("../services/supabase.service.js");
+    const { supabaseAdmin } = await import("../services/supabase.service.js");
     const {
       data: { user },
       error,
-    } = await supabase.auth.getUser(token);
+    } = await supabaseAdmin.auth.getUser(token);
 
     if (error || !user) {
       return res.status(401).json({ error: "Invalid token" });
