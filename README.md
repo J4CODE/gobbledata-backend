@@ -1,4 +1,4 @@
-# GobbleData Backend
+# GobbleData App Backend
 
 Node.js + Express API for generating daily GA4 insights.
 
