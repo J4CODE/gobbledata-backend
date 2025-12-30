@@ -42,14 +42,22 @@ function generateEmailTemplate(insights, userName = "there") {
   };
 
   // Build insight cards HTML
+  // Build insight cards HTML
   const insightCards = insights
     .map((insight, index) => {
       // Handle both database format and insights service format
       const metricName = insight.metric_name || insight.metric;
       const metricValue = insight.metric_value || insight.currentValue;
-      const baselineValue = insight.baseline_value || insight.baseline;
+      const baselineValue =
+        insight.baseline_value || insight.expectedValue || insight.baseline;
       const percentChange = insight.percent_change || insight.percentChange;
       const direction = insight.direction;
+
+      // Safety check - skip if critical values are missing
+      if (!metricValue || !baselineValue || percentChange === undefined) {
+        console.warn("Skipping insight with missing data:", insight);
+        return "";
+      }
 
       // Parse action items (handle both array and string formats)
       const actionItemsArray = Array.isArray(insight.actionItems)
@@ -73,23 +81,25 @@ function generateEmailTemplate(insights, userName = "there") {
         direction === "up" ? "📈" : direction === "down" ? "📉" : "➡️";
 
       return `
-      <div style="${styles.insightCard}">
-        <div style="${styles.insightNumber}">INSIGHT #${index + 1}</div>
-        <div style="${styles.metricName}">${directionIcon} ${metricName}</div>
-        <div style="${styles.changeText}">
-          <span style="color: ${directionColor}; font-weight: bold;">
-            ${percentChange > 0 ? "+" : ""}${(percentChange * 100).toFixed(1)}%
-          </span>
-          <span style="color: #6b7280;">
-            (${metricValue.toLocaleString()} vs ${baselineValue.toLocaleString()})
-          </span>
-        </div>
-        <div style="${styles.actionTitle}">💡 Recommended Actions:</div>
-        <ul style="${styles.actionItems}">
-          ${actionItems}
-        </ul>
+    <div style="${styles.insightCard}">
+      <div style="${styles.insightNumber}">INSIGHT #${index + 1}</div>
+      <div style="${styles.metricName}">${directionIcon} ${metricName}</div>
+      <div style="${styles.changeText}">
+        <span style="color: ${directionColor}; font-weight: bold;">
+          ${percentChange > 0 ? "+" : ""}${(percentChange * 100).toFixed(1)}%
+        </span>
+        <span style="color: #6b7280;">
+          (${Number(metricValue).toLocaleString()} vs ${Number(
+        baselineValue
+      ).toLocaleString()})
+        </span>
       </div>
-    `;
+      <div style="${styles.actionTitle}">💡 Recommended Actions:</div>
+      <ul style="${styles.actionItems}">
+        ${actionItems}
+      </ul>
+    </div>
+  `;
     })
     .join("");
 
@@ -302,10 +312,10 @@ export async function sendTestEmail(email) {
       throw new Error(`Resend error: ${error.message}`);
     }
 
-    console.log("✅ Test email sent:", data.id);
+    console.log("Test email sent:", data.id);
     return { success: true, emailId: data.id };
   } catch (error) {
-    console.error("❌ Test email failed:", error);
+    console.error("Test email failed:", error);
     return { success: false, error: error.message };
   }
 }
