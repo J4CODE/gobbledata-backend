@@ -254,6 +254,27 @@ router.post(
         return res.status(500).json({ error: "Failed to save connection" });
       }
 
+      // Send welcome email after first GA4 connection
+      const { data: existingConnections } = await supabaseAdmin
+        .from("ga4_connections")
+        .select("id")
+        .eq("user_id", userId)
+        .eq("is_active", true);
+
+      const isFirstConnection = existingConnections?.length === 1;
+
+      if (isFirstConnection) {
+        console.log(`[GA4] Sending welcome email to user ${userId}`);
+        const { sendWelcomeEmail } = await import(
+          "../services/email.service.js"
+        );
+
+        // Send asynchronously (don't block the response)
+        sendWelcomeEmail(userId).catch((err) => {
+          console.error("[GA4] Failed to send welcome email:", err);
+        });
+      }
+
       res.json({
         success: true,
         connection: data,
