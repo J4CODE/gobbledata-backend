@@ -168,6 +168,57 @@ function isValidEmail(email) {
 }
 
 /**
+ * Retry helper - attempts email send with exponential backoff
+ * @param {Function} emailFunction - The email sending function to retry
+ * @param {number} maxRetries - Maximum number of retry attempts (default: 3)
+ * @returns {Object} Result from email function
+ */
+async function retryEmailSend(emailFunction, maxRetries = 3) {
+  const delays = [60000, 300000, 900000]; // 1min, 5min, 15min
+
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      const result = await emailFunction();
+
+      // If successful, return immediately
+      if (result.success) {
+        if (attempt > 1) {
+          console.log(`✅ Email succeeded on retry attempt ${attempt}`);
+        }
+        return result;
+      }
+
+      // If failed but not last attempt, wait and retry
+      if (attempt < maxRetries) {
+        const delay = delays[attempt - 1];
+        console.log(
+          `⚠️  Email attempt ${attempt} failed. Retrying in ${delay / 1000}s...`
+        );
+        await new Promise((resolve) => setTimeout(resolve, delay));
+      } else {
+        // Final attempt failed
+        console.error(`❌ Email failed after ${maxRetries} attempts`);
+        return result;
+      }
+    } catch (error) {
+      console.error(`❌ Email attempt ${attempt} threw error:`, error.message);
+
+      if (attempt < maxRetries) {
+        const delay = delays[attempt - 1];
+        console.log(`⚠️  Retrying in ${delay / 1000}s...`);
+        await new Promise((resolve) => setTimeout(resolve, delay));
+      } else {
+        return {
+          success: false,
+          error: error.message,
+          attempts: maxRetries,
+        };
+      }
+    }
+  }
+}
+
+/**
  * Send daily insights email to user
  * @param {string} userId - User ID from Supabase
  * @param {Array} insights - Array of top 3 insights
@@ -216,33 +267,48 @@ export async function sendDailyInsights(userId, insights) {
     const htmlContent = generateEmailTemplate(insights, userName);
 
     // Send email via Resend
-    const { data, error } = await resend.emails.send({
-      from: "GobbleData Insights <insights@gobbledata.com>",
-      to: [user.email],
-      subject: `🔥 Your Daily GA4 Insights - ${new Date().toLocaleDateString(
-        "en-US",
-        { month: "short", day: "numeric" }
-      )}`,
-      html: htmlContent,
+    // Send email via Resend with retry logic
+    const emailResult = await retryEmailSend(async () => {
+      const { data, error } = await resend.emails.send({
+        from: "GobbleData Insights <insights@gobbledata.com>",
+        to: [user.email],
+        subject: `🔥 Your Daily GA4 Insights - ${new Date().toLocaleDateString(
+          "en-US",
+          { month: "short", day: "numeric" }
+        )}`,
+        html: htmlContent,
+      });
+
+      if (error) {
+        console.error("❌ Resend API error:", error);
+        return {
+          success: false,
+          error: error.message,
+        };
+      }
+
+      console.log("✅ Email sent successfully:", {
+        emailId: data.id,
+        to: user.email,
+        timestamp: new Date().toISOString(),
+      });
+
+      return {
+        success: true,
+        message: "Email sent successfully",
+        emailId: data.id,
+        recipient: user.email,
+      };
     });
 
-    if (error) {
-      console.error("❌ Resend API error:", error);
-      throw new Error(`Failed to send email: ${error.message}`);
+    // Return the result from retry wrapper
+    if (!emailResult.success) {
+      throw new Error(
+        `Failed to send email after retries: ${emailResult.error}`
+      );
     }
 
-    console.log("✅ Email sent successfully:", {
-      emailId: data.id,
-      to: user.email,
-      timestamp: new Date().toISOString(),
-    });
-
-    return {
-      success: true,
-      message: "Email sent successfully",
-      emailId: data.id,
-      recipient: user.email,
-    };
+    return emailResult;
   } catch (error) {
     console.error("❌ Error sending daily insights email:", error);
     return {
