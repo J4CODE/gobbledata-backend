@@ -21,6 +21,8 @@ console.log("✅ Step 4: Insights routes imported");
 import stripeRoutes from "./routes/stripe.routes.js";
 console.log("✅ Step 4.5: Stripe routes imported");
 import schedulerRoutes from "./routes/scheduler.routes.js";
+import emailPreferencesRoutes from "./routes/email-preferences.routes.js";
+console.log("✅ Step 4.6: Email preferences routes imported");
 
 // Scheduler
 import {
@@ -197,6 +199,9 @@ console.log("  ✅ Stripe routes registered");
 
 app.use("/api/scheduler", schedulerRoutes);
 console.log("  ✅ Scheduler routes registered");
+
+app.use("/api/email-preferences", emailPreferencesRoutes);
+console.log("  ✅ Email preferences routes registered");
 
 // ==================================================
 // ERROR HANDLERS

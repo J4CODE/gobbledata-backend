@@ -548,10 +548,29 @@ export async function sendWelcomeEmail(userId) {
     });
 
     // Return the result from retry wrapper
+    // Return the result from retry wrapper
     if (!emailResult.success) {
       throw new Error(
         `Failed to send welcome email after retries: ${emailResult.error}`
       );
+    }
+
+    // Log welcome email to user_email_logs table (NEW!)
+    const { error: logError } = await supabaseAdmin
+      .from("user_email_logs")
+      .insert({
+        user_id: userId,
+        email_type: "welcome",
+        sent_at: new Date().toISOString(),
+        insights_count: 0,
+        cron_job_id: null, // Welcome emails aren't triggered by cron
+        email_status: "sent",
+        resend_message_id: emailResult.emailId || null,
+      });
+
+    if (logError) {
+      console.error(`❌ Failed to log welcome email:`, logError);
+      // Don't fail the entire function, just log the error
     }
 
     return emailResult;

@@ -55,7 +55,7 @@ function shouldSendReport(subscriptionTier, lastEmailSentAt, frequency) {
 /**
  * Process daily insights for a single user
  */
-async function processDailyInsightsForUser(userId) {
+async function processDailyInsightsForUser(userId, runId = null) {
   try {
     console.log(`[Scheduler] Processing user: ${userId}`);
 
@@ -226,6 +226,26 @@ async function processDailyInsightsForUser(userId) {
             const noInsightsResult = await sendNoInsightsEmail(userId);
 
             if (noInsightsResult.success) {
+              // Log email to user_email_logs table (NEW!)
+              const { error: logError } = await supabaseAdmin
+                .from("user_email_logs")
+                .insert({
+                  user_id: userId,
+                  email_type: "no_insights",
+                  sent_at: new Date().toISOString(),
+                  insights_count: 0,
+                  cron_job_id: runId, // Link to current cron run
+                  email_status: "sent",
+                  resend_message_id: noInsightsResult.emailId || null,
+                });
+
+              if (logError) {
+                console.error(
+                  `[Scheduler] Failed to log no-insights email:`,
+                  logError
+                );
+              }
+
               // Update last email sent timestamp
               await supabaseAdmin
                 .from("email_preferences")
@@ -296,7 +316,25 @@ async function processDailyInsightsForUser(userId) {
       return { userId, success: false, error: emailResult.error };
     }
 
-    // Step 13: Update last email sent timestamp
+    // Step 13: Log email to user_email_logs table (NEW!)
+    const { error: logError } = await supabaseAdmin
+      .from("user_email_logs")
+      .insert({
+        user_id: userId,
+        email_type: "daily_insights",
+        sent_at: new Date().toISOString(),
+        insights_count: topInsights.length,
+        cron_job_id: runId, // Link to current cron run
+        email_status: "sent",
+        resend_message_id: emailResult.emailId || null,
+      });
+
+    if (logError) {
+      console.error(`[Scheduler] Failed to log email:`, logError);
+      // Don't fail the entire job, just log the error
+    }
+
+    // Step 14: Update last email sent timestamp (existing logic)
     await supabaseAdmin
       .from("email_preferences")
       .update({
@@ -314,6 +352,65 @@ async function processDailyInsightsForUser(userId) {
   } catch (error) {
     console.error(`[Scheduler] Error processing user ${userId}:`, error);
     return { userId, success: false, error: error.message };
+  }
+}
+
+/**
+ * Check if we should send email to this user based on their preferred delivery time
+ * Uses ±1 hour window for flexibility (e.g., 2 PM preference = send between 1-3 PM)
+ */
+async function shouldSendEmailNow(userId) {
+  try {
+    // Fetch user's email preferences
+    const { data: prefs, error } = await supabaseAdmin
+      .from("email_preferences")
+      .select("delivery_time, timezone, enabled")
+      .eq("user_id", userId)
+      .single();
+
+    if (error || !prefs || !prefs.enabled) {
+      console.log(
+        `[Scheduler] User ${userId} - email disabled or no preferences`
+      );
+      return false;
+    }
+
+    // Parse user's preferred delivery time (format: "14:00:00")
+    const [prefHours, prefMinutes] = prefs.delivery_time.split(":").map(Number);
+
+    // Get current time in user's timezone
+    const now = new Date();
+    const userTimeString = now.toLocaleString("en-US", {
+      timeZone: prefs.timezone,
+      hour12: false,
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+
+    const [currentHours] = userTimeString.split(":").map(Number);
+
+    // Check if current hour is within ±1 hour of preferred hour
+    let hourDiff = Math.abs(currentHours - prefHours);
+
+    // Handle day wraparound (e.g., 23:00 vs 01:00 should be 2 hours, not 22)
+    if (hourDiff > 12) {
+      hourDiff = 24 - hourDiff;
+    }
+
+    const isWithinWindow = hourDiff <= 1;
+
+    console.log(
+      `[Scheduler] User ${userId} - Preferred: ${prefHours}:00 ${prefs.timezone}, Current: ${currentHours}:00, Diff: ${hourDiff}h, Send: ${isWithinWindow}`
+    );
+
+    return isWithinWindow;
+  } catch (error) {
+    console.error(
+      `[Scheduler] Error checking send time for user ${userId}:`,
+      error
+    );
+    // On error, default to sending (fail-safe)
+    return true;
   }
 }
 
@@ -370,13 +467,62 @@ export async function runDailyInsightsJob() {
     );
 
     // Process each user
+    // Process each user (filter by preferred delivery time)
+    console.log(
+      "[Scheduler] Checking which users should receive emails now...\n"
+    );
+
+    // Filter users based on their preferred delivery time
+    const usersToProcess = [];
+    for (const pref of preferences) {
+      const shouldSend = await shouldSendEmailNow(pref.user_id);
+      if (shouldSend) {
+        usersToProcess.push(pref);
+      }
+    }
+
+    console.log(
+      `[Scheduler] ${usersToProcess.length} of ${preferences.length} user(s) are within their delivery time window\n`
+    );
+
+    if (usersToProcess.length === 0) {
+      console.log("[Scheduler] No users to process at this time");
+
+      // Update run log
+      if (runId) {
+        const duration = Date.now() - startTime;
+        await supabaseAdmin
+          .from("cron_job_runs")
+          .update({
+            status: "success",
+            completed_at: new Date().toISOString(),
+            users_processed: 0,
+            emails_sent: 0,
+            insights_found: 0,
+            duration_ms: duration,
+          })
+          .eq("id", runId);
+      }
+
+      return {
+        success: true,
+        processedUsers: 0,
+        skippedUsers: preferences.length,
+        results: [],
+      };
+    }
+
+    // Process filtered users
     const results = await Promise.allSettled(
-      preferences.map((pref) => processDailyInsightsForUser(pref.user_id))
+      usersToProcess.map((pref) =>
+        processDailyInsightsForUser(pref.user_id, runId)
+      )
     );
 
     // Summarize results
     const summary = {
-      total: preferences.length,
+      total: usersToProcess.length,
+      skipped: preferences.length - usersToProcess.length,
       successful: results.filter(
         (r) => r.status === "fulfilled" && r.value.success
       ).length,
@@ -390,6 +536,7 @@ export async function runDailyInsightsJob() {
     console.log("\n==================================================");
     console.log("[Scheduler] Daily insights job completed");
     console.log(`Total users: ${summary.total}`);
+    console.log(`Skipped (wrong time): ${summary.skipped}`);
     console.log(`Successful: ${summary.successful}`);
     console.log(`Failed: ${summary.failed}`);
     console.log("==================================================\n");
