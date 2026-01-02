@@ -564,3 +564,179 @@ export async function sendWelcomeEmail(userId) {
     };
   }
 }
+
+/**
+ * Send "no insights yet" email after 24h if no insights generated
+ * @param {string} userId - User ID from Supabase
+ * @returns {Object} Success status and message
+ */
+export async function sendNoInsightsEmail(userId) {
+  try {
+    // Validate input
+    if (!userId) {
+      throw new Error("User ID is required");
+    }
+
+    // Get user email from Supabase Auth
+    const {
+      data: { user },
+      error: authError,
+    } = await supabaseAdmin.auth.admin.getUserById(userId);
+
+    if (authError || !user || !user.email) {
+      throw new Error(
+        `User not found or has no email: ${
+          authError?.message || "Unknown error"
+        }`
+      );
+    }
+
+    // Get display name from user_profiles (optional)
+    const { data: profile } = await supabaseAdmin
+      .from("user_profiles")
+      .select("display_name")
+      .eq("id", userId)
+      .single();
+
+    const userName = profile?.display_name || user.email.split("@")[0];
+
+    // Validate email address
+    if (!isValidEmail(user.email)) {
+      throw new Error("Invalid email address format");
+    }
+
+    // Build "no insights yet" email HTML
+    const htmlContent = `
+      <!DOCTYPE html>
+      <html>
+        <head>
+          <meta charset="UTF-8">
+          <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        </head>
+        <body style="margin: 0; padding: 0; background-color: #f9fafb; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;">
+          <div style="max-width: 600px; margin: 0 auto; padding: 40px 20px;">
+            
+            <!-- Header -->
+            <div style="text-align: center; margin-bottom: 40px;">
+              <h1 style="margin: 0; font-size: 32px; color: #1f2937;">⏳ Still Processing...</h1>
+            </div>
+
+            <!-- Main Content -->
+            <div style="background: white; padding: 40px; border-radius: 12px; box-shadow: 0 4px 6px rgba(0,0,0,0.1);">
+              
+              <p style="font-size: 18px; color: #1f2937; margin: 0 0 20px 0;">
+                Hey ${userName}! 👋
+              </p>
+
+              <p style="font-size: 16px; color: #4b5563; line-height: 1.6; margin: 0 0 20px 0;">
+                We're still crunching your GA4 data. Here's what's happening:
+              </p>
+
+              <div style="background: #fef3c7; border-left: 4px solid #f59e0b; padding: 20px; border-radius: 8px; margin-bottom: 20px;">
+                <p style="font-size: 16px; color: #92400e; font-weight: bold; margin: 0 0 10px 0;">
+                  Why you haven't received insights yet:
+                </p>
+                <ul style="color: #92400e; font-size: 15px; line-height: 1.8; margin: 0; padding-left: 20px;">
+                  <li>We need at least 100 sessions/day for reliable anomaly detection</li>
+                  <li>Your data might be too consistent (no significant changes detected)</li>
+                  <li>We're analyzing 30 days of history - this takes time</li>
+                </ul>
+              </div>
+
+              <p style="font-size: 16px; color: #1f2937; font-weight: bold; margin: 0 0 10px 0;">
+                What happens next:
+              </p>
+
+              <p style="font-size: 15px; color: #4b5563; line-height: 1.6; margin: 0 0 20px 0;">
+                We check every hour for new patterns. If we detect any significant changes in your metrics, you'll get an email immediately.
+              </p>
+
+              <div style="background: #f3f4f6; padding: 20px; border-radius: 8px; margin-bottom: 20px;">
+                <p style="font-size: 16px; color: #1f2937; font-weight: bold; margin: 0 0 10px 0;">
+                  In the meantime:
+                </p>
+                <ul style="color: #4b5563; font-size: 15px; line-height: 1.8; margin: 0; padding-left: 20px;">
+                  <li>Make sure your GA4 tracking code is installed</li>
+                  <li>Check that you're getting traffic (at least 100 sessions/day)</li>
+                  <li>Verify your property is collecting data in Google Analytics</li>
+                </ul>
+              </div>
+
+              <!-- CTA Button -->
+              <div style="text-align: center; margin: 30px 0;">
+                <a href="https://app.gobbledata.com/dashboard" style="display: inline-block; background: #667eea; color: white; padding: 14px 28px; text-decoration: none; border-radius: 6px; font-weight: bold; font-size: 16px;">
+                  View Dashboard
+                </a>
+              </div>
+
+              <p style="font-size: 14px; color: #6b7280; margin: 30px 0 0 0; border-top: 1px solid #e5e7eb; padding-top: 20px;">
+                Questions? Just reply to this email.
+              </p>
+
+              <p style="font-size: 14px; color: #6b7280; margin: 10px 0 0 0;">
+                - The GobbleData Team 🦃
+              </p>
+
+            </div>
+
+            <!-- Footer -->
+            <div style="text-align: center; padding: 30px 20px; color: #9ca3af; font-size: 13px;">
+              <p style="margin: 0;">
+                © ${new Date().getFullYear()} GobbleData - AI-Powered GA4 Insights
+              </p>
+            </div>
+
+          </div>
+        </body>
+      </html>
+    `;
+
+    // Send email via Resend with retry logic
+    const emailResult = await retryEmailSend(async () => {
+      const { data, error } = await resend.emails.send({
+        from: "GobbleData Insights <insights@gobbledata.com>",
+        to: [user.email],
+        subject:
+          "⏳ Your first insights are processing - here's what's happening",
+        html: htmlContent,
+      });
+
+      if (error) {
+        console.error("❌ Resend API error (no insights email):", error);
+        return {
+          success: false,
+          error: error.message,
+        };
+      }
+
+      console.log("✅ No insights email sent successfully:", {
+        emailId: data.id,
+        to: user.email,
+        timestamp: new Date().toISOString(),
+      });
+
+      return {
+        success: true,
+        message: "No insights email sent successfully",
+        emailId: data.id,
+        recipient: user.email,
+      };
+    });
+
+    // Return the result from retry wrapper
+    if (!emailResult.success) {
+      throw new Error(
+        `Failed to send no insights email after retries: ${emailResult.error}`
+      );
+    }
+
+    return emailResult;
+  } catch (error) {
+    console.error("❌ Error sending no insights email:", error);
+    return {
+      success: false,
+      message: error.message,
+      error: error,
+    };
+  }
+}

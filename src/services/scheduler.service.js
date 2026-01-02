@@ -193,6 +193,53 @@ async function processDailyInsightsForUser(userId) {
 
     if (!insights || insights.length === 0) {
       console.log(`[Scheduler] No insights generated for user ${userId}`);
+
+      // Check if we should send "no insights yet" email
+      const { data: connection, error: connError } = await supabaseAdmin
+        .from("ga4_connections")
+        .select("created_at")
+        .eq("user_id", userId)
+        .eq("is_active", true)
+        .order("created_at", { ascending: true })
+        .limit(1)
+        .single();
+
+      if (!connError && connection) {
+        const hoursSinceConnection =
+          (Date.now() - new Date(connection.created_at)) / (1000 * 60 * 60);
+        const lastEmailSent = emailPref.last_email_sent_at;
+
+        // Send "no insights" email if:
+        // - More than 24 hours since connection
+        // - Haven't sent this email before (or it's been 7+ days)
+        if (hoursSinceConnection >= 24) {
+          const daysSinceLastEmail = lastEmailSent
+            ? (Date.now() - new Date(lastEmailSent)) / (1000 * 60 * 60 * 24)
+            : 999;
+
+          if (daysSinceLastEmail >= 7) {
+            console.log(
+              `[Scheduler] Sending "no insights yet" email to user ${userId}`
+            );
+            const { sendNoInsightsEmail } = await import("./email.service.js");
+
+            const noInsightsResult = await sendNoInsightsEmail(userId);
+
+            if (noInsightsResult.success) {
+              // Update last email sent timestamp
+              await supabaseAdmin
+                .from("email_preferences")
+                .update({ last_email_sent_at: new Date().toISOString() })
+                .eq("user_id", userId);
+
+              console.log(
+                `[Scheduler] "No insights" email sent to user ${userId}`
+              );
+            }
+          }
+        }
+      }
+
       return { userId, success: false, error: "No insights generated" };
     }
 
