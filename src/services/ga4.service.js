@@ -106,11 +106,14 @@ export const ga4Service = {
   },
 
   /**
-   * Implement fetchMetrics() Function and Fetch GA4 metrics data
-   */
-  /**
    * Fetch metrics from GA4 Data API
-   async fetchMetrics(propertyId, accessToken, refreshToken, options = {}) {
+   * @param {string} propertyId - GA4 property ID
+   * @param {string} accessToken - Valid OAuth access token
+   * @param {string} refreshToken - Refresh token for auto-renewal
+   * @param {object} options - Date range and metrics options
+   * @returns {object} Metrics data
+   */
+  async fetchMetrics(propertyId, accessToken, refreshToken, options = {}) {
     try {
       const {
         startDate = "7daysAgo",
@@ -285,7 +288,9 @@ export const ga4Service = {
     };
   },
 
-  /* Helper: Format date from YYYYMMDD to YYYY-MM-DD */
+  /**
+   * Helper: Format date from YYYYMMDD to YYYY-MM-DD
+   */
   formatDate(dateString) {
     // Input: "20241210" -> Output: "2024-12-10"
     if (dateString.length === 8) {
