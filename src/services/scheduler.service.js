@@ -171,11 +171,25 @@ async function processDailyInsightsForUser(userId, runId = null) {
     const metrics = await ga4Service.fetchMetrics(
       connection.property_id,
       accessToken,
+      connection.refresh_token,
       {
         startDate: `${lookbackDays}daysAgo`,
         endDate: "yesterday",
       }
     );
+
+    // If token was refreshed during fetchMetrics, save it
+    if (metrics.tokenRefreshed && metrics.newAccessToken) {
+      console.log(`[Scheduler] Saving refreshed token for user ${userId}`);
+
+      await supabaseAdmin
+        .from("ga4_connections")
+        .update({
+          access_token: metrics.newAccessToken,
+          token_expires_at: new Date(Date.now() + 3600 * 1000).toISOString(), // 1 hour from now
+        })
+        .eq("id", connection.id);
+    }
 
     if (
       !metrics ||
@@ -614,4 +628,70 @@ export function startDailySchedule() {
 export async function runNow() {
   console.log("[Scheduler] Manual trigger - running job now...");
   return await runDailyInsightsJob();
+}
+
+/**
+ * FOR TESTING: Process insights for current user immediately
+ * Bypasses time window checks - sends email right now
+ */
+export async function runNowForCurrentUser(userId) {
+  console.log(`[Scheduler] Manual trigger for user ${userId} - running now...`);
+
+  const startTime = Date.now();
+
+  try {
+    // Create run log entry
+    const { data: runLog, error: logError } = await supabaseAdmin
+      .from("cron_job_runs")
+      .insert({
+        status: "running",
+        started_at: new Date().toISOString(),
+      })
+      .select()
+      .single();
+
+    const runId = runLog?.id || null;
+
+    if (logError) {
+      console.error("[Scheduler] Failed to create run log:", logError);
+    }
+
+    // Process this specific user
+    const result = await processDailyInsightsForUser(userId, runId);
+
+    const duration = Date.now() - startTime;
+
+    // Update run log
+    if (runId) {
+      await supabaseAdmin
+        .from("cron_job_runs")
+        .update({
+          status: result.success ? "success" : "failed",
+          completed_at: new Date().toISOString(),
+          users_processed: 1,
+          emails_sent: result.success ? 1 : 0,
+          insights_found: result.insightsCount || 0,
+          duration_ms: duration,
+          errors: result.success ? null : { message: result.error },
+        })
+        .eq("id", runId);
+    }
+
+    console.log(`[Scheduler] Manual run completed in ${duration}ms`);
+    console.log(`Result:`, result);
+
+    return {
+      success: result.success,
+      userId,
+      result,
+      duration,
+    };
+  } catch (error) {
+    console.error(`[Scheduler] Error in manual run:`, error);
+    return {
+      success: false,
+      userId,
+      error: error.message,
+    };
+  }
 }

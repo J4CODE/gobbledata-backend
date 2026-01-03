@@ -31,7 +31,6 @@ router.get("/test-time-check", authenticateUser, async (req, res) => {
   try {
     const userId = req.user.id;
     const { supabaseAdmin } = await import("../services/supabase.service.js");
-
     const { data: prefs } = await supabaseAdmin
       .from("email_preferences")
       .select("delivery_time, timezone, enabled")
@@ -50,6 +49,7 @@ router.get("/test-time-check", authenticateUser, async (req, res) => {
 
     const [prefHours] = prefs.delivery_time.split(":").map(Number);
     const [currentHours] = userTime.split(":").map(Number);
+
     let hourDiff = Math.abs(currentHours - prefHours);
     if (hourDiff > 12) hourDiff = 24 - hourDiff;
 
@@ -65,6 +65,42 @@ router.get("/test-time-check", authenticateUser, async (req, res) => {
     });
   } catch (err) {
     res.status(500).json({ error: err.message });
+  }
+});
+
+// NEW: TEST ENDPOINT - Send test email immediately (bypasses time check)
+router.post("/test-email-now", authenticateUser, async (req, res) => {
+  try {
+    const userId = req.user.id;
+
+    console.log(`[API] Manual email test requested by user ${userId}`);
+
+    const { runNowForCurrentUser } = await import(
+      "../services/scheduler.service.js"
+    );
+    const result = await runNowForCurrentUser(userId);
+
+    if (result.success) {
+      res.json({
+        success: true,
+        message: "✅ Email sent successfully!",
+        insightsCount: result.result?.insightsCount || 0,
+        duration: result.duration,
+        details: result.result,
+      });
+    } else {
+      res.status(400).json({
+        success: false,
+        error: result.error || "Failed to send email",
+        details: result.result,
+      });
+    }
+  } catch (error) {
+    console.error("Error in test-email-now:", error);
+    res.status(500).json({
+      success: false,
+      error: error.message,
+    });
   }
 });
 

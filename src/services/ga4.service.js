@@ -110,13 +110,7 @@ export const ga4Service = {
    */
   /**
    * Fetch metrics from GA4 Data API
-   * @param {string} propertyId - GA4 property ID (e.g., "468972634")
-   * @param {string} accessToken - Valid OAuth access token
-   * @param {object} options - Date range and metrics options
-   * @returns {object} Metrics data
-   */
-
-  async fetchMetrics(propertyId, accessToken, options = {}) {
+   async fetchMetrics(propertyId, accessToken, refreshToken, options = {}) {
     try {
       const {
         startDate = "7daysAgo",
@@ -142,80 +136,77 @@ export const ga4Service = {
       console.log("  Date range:", startDate, "to", endDate);
 
       // Set up OAuth2 client with access token
-      oauth2Client.setCredentials({ access_token: accessToken });
+      oauth2Client.setCredentials({ 
+        access_token: accessToken,
+        refresh_token: refreshToken 
+      });
 
       // Initialize Analytics Data API
       const analyticsData = google.analyticsdata("v1beta");
 
       // Run report request
-      const response = await analyticsData.properties.runReport({
-        auth: oauth2Client,
-        property: `properties/${propertyId}`,
-        requestBody: {
-          dateRanges: [
-            {
-              startDate: startDate,
-              endDate: endDate,
+      let response;
+      try {
+        response = await analyticsData.properties.runReport({
+          auth: oauth2Client,
+          property: `properties/${propertyId}`,
+          requestBody: {
+            dateRanges: [
+              {
+                startDate: startDate,
+                endDate: endDate,
+              },
+            ],
+            metrics: metrics.map((name) => ({ name })),
+            dimensions: [{ name: "date" }],
+            keepEmptyRows: false,
+          },
+        });
+      } catch (error) {
+        // If token expired, refresh and retry
+        if (error.code === 401 || error.message?.includes('invalid_grant')) {
+          console.log("🔄 Access token expired, refreshing...");
+          
+          const newCredentials = await this.refreshAccessToken(refreshToken);
+          
+          console.log("✅ Token refreshed successfully");
+          
+          // Retry the request with new token
+          oauth2Client.setCredentials({ 
+            access_token: newCredentials.access_token,
+            refresh_token: refreshToken 
+          });
+          
+          response = await analyticsData.properties.runReport({
+            auth: oauth2Client,
+            property: `properties/${propertyId}`,
+            requestBody: {
+              dateRanges: [
+                {
+                  startDate: startDate,
+                  endDate: endDate,
+                },
+              ],
+              metrics: metrics.map((name) => ({ name })),
+              dimensions: [{ name: "date" }],
+              keepEmptyRows: false,
             },
-          ],
-          metrics: metrics.map((name) => ({ name })),
-          // Dimension breakdown by date for trend analysis
-          dimensions: [{ name: "date" }],
-          // Keep data fresh
-          keepEmptyRows: false,
-        },
-      });
-
-      // Parse response
-      const { rows, totals, metricHeaders } = response.data;
-
-      if (!rows || rows.length === 0) {
-        console.log("⚠️  No data available for this date range");
-        return {
-          hasData: false,
-          propertyId,
-          dateRange: { startDate, endDate },
-          totals: {},
-          daily: [],
-        };
+          });
+          
+          // Return new access token so caller can save it
+          return {
+            ...this._parseResponse(response, propertyId, startDate, endDate),
+            newAccessToken: newCredentials.access_token,
+            tokenRefreshed: true,
+          };
+        } else {
+          throw error;
+        }
       }
 
-      // Parse totals (aggregate metrics)
-      const totalMetrics = {};
-      if (totals && totals[0]?.metricValues) {
-        metricHeaders.forEach((header, index) => {
-          const value = totals[0].metricValues[index]?.value;
-          totalMetrics[header.name] = parseFloat(value) || 0;
-        });
-      }
+      // Parse and return response
+      return this._parseResponse(response, propertyId, startDate, endDate);
 
-      // Parse daily breakdown
-      const dailyData = rows.map((row) => {
-        const date = row.dimensionValues[0].value; // YYYYMMDD format
-        const metrics = {};
-
-        metricHeaders.forEach((header, index) => {
-          const value = row.metricValues[index]?.value;
-          metrics[header.name] = parseFloat(value) || 0;
-        });
-
-        return {
-          date: ga4Service.formatDate(date), // Convert to YYYY-MM-DD
-          ...metrics,
-        };
-      });
-
-      console.log(
-        `✅ Fetched ${dailyData.length} days of data for property ${propertyId}`
-      );
-
-      return {
-        hasData: true,
-        propertyId,
-        dateRange: { startDate, endDate },
-        totals: totalMetrics,
-        daily: dailyData,
-      };
     } catch (error) {
       console.error("❌ Error fetching GA4 metrics:", error.message);
 
@@ -230,15 +221,68 @@ export const ga4Service = {
       console.log("  Error errors:", JSON.stringify(error.errors, null, 2));
 
       // Handle specific error cases
-      if (error.code === 401) {
-        throw new Error("Access token expired - needs refresh");
-      }
       if (error.code === 403) {
         throw new Error("Insufficient permissions - check GA4 access");
       }
 
       throw error;
     }
+  },
+
+  /**
+   * Helper: Parse GA4 API response
+   * @private
+   */
+  _parseResponse(response, propertyId, startDate, endDate) {
+    const { rows, totals, metricHeaders } = response.data;
+
+    if (!rows || rows.length === 0) {
+      console.log("⚠️  No data available for this date range");
+      return {
+        hasData: false,
+        propertyId,
+        dateRange: { startDate, endDate },
+        totals: {},
+        daily: [],
+      };
+    }
+
+    // Parse totals (aggregate metrics)
+    const totalMetrics = {};
+    if (totals && totals[0]?.metricValues) {
+      metricHeaders.forEach((header, index) => {
+        const value = totals[0].metricValues[index]?.value;
+        totalMetrics[header.name] = parseFloat(value) || 0;
+      });
+    }
+
+    // Parse daily breakdown
+    const dailyData = rows.map((row) => {
+      const date = row.dimensionValues[0].value;
+      const metrics = {};
+
+      metricHeaders.forEach((header, index) => {
+        const value = row.metricValues[index]?.value;
+        metrics[header.name] = parseFloat(value) || 0;
+      });
+
+      return {
+        date: ga4Service.formatDate(date),
+        ...metrics,
+      };
+    });
+
+    console.log(
+      `✅ Fetched ${dailyData.length} days of data for property ${propertyId}`
+    );
+
+    return {
+      hasData: true,
+      propertyId,
+      dateRange: { startDate, endDate },
+      totals: totalMetrics,
+      daily: dailyData,
+    };
   },
 
   /* Helper: Format date from YYYYMMDD to YYYY-MM-DD */
