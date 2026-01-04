@@ -55,7 +55,11 @@ function shouldSendReport(subscriptionTier, lastEmailSentAt, frequency) {
 /**
  * Process daily insights for a single user
  */
-async function processDailyInsightsForUser(userId, runId = null) {
+async function processDailyInsightsForUser(
+  userId,
+  runId = null,
+  skipTimestampUpdate = false
+) {
   try {
     console.log(`[Scheduler] Processing user: ${userId}`);
 
@@ -260,11 +264,17 @@ async function processDailyInsightsForUser(userId, runId = null) {
                 );
               }
 
-              // Update last email sent timestamp
-              await supabaseAdmin
-                .from("email_preferences")
-                .update({ last_email_sent_at: new Date().toISOString() })
-                .eq("user_id", userId);
+              // Update last email sent timestamp (skip if testing)
+              if (!skipTimestampUpdate) {
+                await supabaseAdmin
+                  .from("email_preferences")
+                  .update({ last_email_sent_at: new Date().toISOString() })
+                  .eq("user_id", userId);
+              } else {
+                console.log(
+                  `[Scheduler] Skipping timestamp update (test mode)`
+                );
+              }
 
               console.log(
                 `[Scheduler] "No insights" email sent to user ${userId}`
@@ -348,13 +358,17 @@ async function processDailyInsightsForUser(userId, runId = null) {
       // Don't fail the entire job, just log the error
     }
 
-    // Step 14: Update last email sent timestamp (existing logic)
-    await supabaseAdmin
-      .from("email_preferences")
-      .update({
-        last_email_sent_at: new Date().toISOString(),
-      })
-      .eq("user_id", userId);
+    // Step 14: Update last email sent timestamp (skip if testing)
+    if (!skipTimestampUpdate) {
+      await supabaseAdmin
+        .from("email_preferences")
+        .update({
+          last_email_sent_at: new Date().toISOString(),
+        })
+        .eq("user_id", userId);
+    } else {
+      console.log(`[Scheduler] Skipping timestamp update (test mode)`);
+    }
 
     console.log(`[Scheduler] Successfully processed user ${userId}`);
     return {
@@ -657,7 +671,7 @@ export async function runNowForCurrentUser(userId) {
     }
 
     // Process this specific user
-    const result = await processDailyInsightsForUser(userId, runId);
+    const result = await processDailyInsightsForUser(userId, runId, true); // true = skip timestamp update
 
     const duration = Date.now() - startTime;
 
@@ -671,12 +685,8 @@ export async function runNowForCurrentUser(userId) {
       const noInsightsResult = await sendNoInsightsEmail(userId);
 
       if (noInsightsResult.success) {
-        // Update last email sent timestamp
-        await supabaseAdmin
-          .from("email_preferences")
-          .update({ last_email_sent_at: new Date().toISOString() })
-          .eq("user_id", userId);
-
+        // Skip timestamp update in manual test mode
+        console.log(`[Scheduler] Skipping timestamp update (manual test mode)`);
         console.log(`[Scheduler] "No insights" email sent successfully!`);
 
         // Update result to success
